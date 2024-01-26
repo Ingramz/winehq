@@ -313,7 +313,7 @@ static void vkd3d_wait_for_gpu_fence(struct vkd3d_fence_worker *worker,
 
     TRACE("Signaling fence %p value %#"PRIx64".\n", waiting_fence->fence, waiting_fence->value);
     if (FAILED(hr = d3d12_fence_signal(waiting_fence->fence, waiting_fence->value, waiting_fence->u.vk_fence, false)))
-        ERR("Failed to signal D3D12 fence, hr %#x.\n", hr);
+        ERR("Failed to signal d3d12 fence, hr %s.\n", debugstr_hresult(hr));
 
     d3d12_fence_decref(waiting_fence->fence);
 
@@ -2644,6 +2644,8 @@ static bool d3d12_command_list_update_compute_pipeline(struct d3d12_command_list
 {
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
 
+    vkd3d_cond_signal(&list->device->worker_cond);
+
     if (list->current_pipeline != VK_NULL_HANDLE)
         return true;
 
@@ -2664,6 +2666,8 @@ static bool d3d12_command_list_update_graphics_pipeline(struct d3d12_command_lis
     const struct vkd3d_vk_device_procs *vk_procs = &list->device->vk_procs;
     VkRenderPass vk_render_pass;
     VkPipeline vk_pipeline;
+
+    vkd3d_cond_signal(&list->device->worker_cond);
 
     if (list->current_pipeline != VK_NULL_HANDLE)
         return true;
@@ -3266,7 +3270,8 @@ static void d3d12_command_list_bind_descriptor_heap(struct d3d12_command_list *l
     {
         VkDescriptorSet vk_descriptor_set = heap->vk_descriptor_sets[set].vk_set;
 
-        if (!vk_descriptor_set)
+        /* Null vk_set_layout means set 0 uses mutable descriptors, and this set is unused. */
+        if (!vk_descriptor_set || !list->device->vk_descriptor_heap_layouts[set].vk_set_layout)
             continue;
 
         VK_CALL(vkCmdBindDescriptorSets(list->vk_command_buffer, bindings->vk_bind_point, rs->vk_pipeline_layout,
@@ -3701,7 +3706,7 @@ static void d3d12_command_list_copy_incompatible_texture_region(struct d3d12_com
             buffer_image_copy.imageExtent.height * buffer_image_copy.imageExtent.depth * layer_count;
     if (FAILED(hr = d3d12_command_list_allocate_transfer_buffer(list, buffer_size, &transfer_buffer)))
     {
-        ERR("Failed to allocate transfer buffer, hr %#x.\n", hr);
+        ERR("Failed to allocate transfer buffer, hr %s.\n", debugstr_hresult(hr));
         return;
     }
 
@@ -6508,7 +6513,7 @@ static void STDMETHODCALLTYPE d3d12_command_queue_CopyTileMappings(ID3D12Command
     if (!(op = d3d12_command_queue_op_array_require_space(&command_queue->op_queue)))
     {
         ERR("Failed to add op.\n");
-        return;
+        goto unlock_mutex;
     }
     op->opcode = VKD3D_CS_OP_COPY_MAPPINGS;
     op->u.copy_mappings.dst_resource = dst_resource_impl;
@@ -6520,6 +6525,7 @@ static void STDMETHODCALLTYPE d3d12_command_queue_CopyTileMappings(ID3D12Command
 
     d3d12_command_queue_submit_locked(command_queue);
 
+unlock_mutex:
     vkd3d_mutex_unlock(&command_queue->op_mutex);
 }
 
@@ -6558,7 +6564,7 @@ static void d3d12_command_queue_submit_locked(struct d3d12_command_queue *queue)
     if (queue->op_queue.count == 1 && !queue->is_flushing)
     {
         if (FAILED(hr = d3d12_command_queue_flush_ops_locked(queue, &flushed_any)))
-            ERR("Cannot flush queue, hr %#x.\n", hr);
+            ERR("Failed to flush queue, hr %s.\n", debugstr_hresult(hr));
     }
 }
 

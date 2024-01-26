@@ -52,6 +52,7 @@
 #define TAG_AON9 VKD3D_MAKE_TAG('A', 'o', 'n', '9')
 #define TAG_DXBC VKD3D_MAKE_TAG('D', 'X', 'B', 'C')
 #define TAG_DXIL VKD3D_MAKE_TAG('D', 'X', 'I', 'L')
+#define TAG_FX10 VKD3D_MAKE_TAG('F', 'X', '1', '0')
 #define TAG_ISG1 VKD3D_MAKE_TAG('I', 'S', 'G', '1')
 #define TAG_ISGN VKD3D_MAKE_TAG('I', 'S', 'G', 'N')
 #define TAG_OSG1 VKD3D_MAKE_TAG('O', 'S', 'G', '1')
@@ -80,7 +81,7 @@ static inline size_t align(size_t addr, size_t alignment)
 # ifdef __MINGW_PRINTF_FORMAT
 #  define VKD3D_PRINTF_FUNC(fmt, args) __attribute__((format(__MINGW_PRINTF_FORMAT, fmt, args)))
 # else
-#  define VKD3D_PRINTF_FUNC(fmt, args) /* __attribute__((format(printf, fmt, args))) */
+#  define VKD3D_PRINTF_FUNC(fmt, args) __attribute__((format(printf, fmt, args)))
 # endif
 # define VKD3D_UNUSED __attribute__((unused))
 # define VKD3D_UNREACHABLE __builtin_unreachable()
@@ -107,7 +108,7 @@ static inline unsigned int vkd3d_popcount(unsigned int v)
 {
 #ifdef _MSC_VER
     return __popcnt(v);
-#elif defined(__MINGW32__)
+#elif defined(HAVE_BUILTIN_POPCOUNT)
     return __builtin_popcount(v);
 #else
     v -= (v >> 1) & 0x55555555;
@@ -266,33 +267,53 @@ static inline int ascii_strcasecmp(const char *a, const char *b)
     return c_a - c_b;
 }
 
+static inline uint64_t vkd3d_atomic_add_fetch_u64(uint64_t volatile *x, uint64_t val)
+{
+#if HAVE_SYNC_ADD_AND_FETCH
+    return __sync_add_and_fetch(x, val);
+#elif defined(_WIN32)
+    return InterlockedAdd64((LONG64 *)x, val);
+#else
+# error "vkd3d_atomic_add_fetch_u64() not implemented for this platform"
+#endif
+}
+
+static inline uint32_t vkd3d_atomic_add_fetch_u32(uint32_t volatile *x, uint32_t val)
+{
+#if HAVE_SYNC_ADD_AND_FETCH
+    return __sync_add_and_fetch(x, val);
+#elif defined(_WIN32)
+    return InterlockedAdd((LONG *)x, val);
+#else
+# error "vkd3d_atomic_add_fetch_u32() not implemented for this platform"
+#endif
+}
+
+static inline uint64_t vkd3d_atomic_increment_u64(uint64_t volatile *x)
+{
+    return vkd3d_atomic_add_fetch_u64(x, 1);
+}
+
+static inline uint32_t vkd3d_atomic_decrement_u32(uint32_t volatile *x)
+{
+    return vkd3d_atomic_add_fetch_u32(x, ~0u);
+}
+
+static inline uint32_t vkd3d_atomic_increment_u32(uint32_t volatile *x)
+{
+    return vkd3d_atomic_add_fetch_u32(x, 1);
+}
+
 #ifndef _WIN32
-# if HAVE_SYNC_ADD_AND_FETCH
 static inline LONG InterlockedIncrement(LONG volatile *x)
 {
-    return __sync_add_and_fetch(x, 1);
+    return vkd3d_atomic_increment_u32((uint32_t *)x);
 }
-static inline LONG64 InterlockedIncrement64(LONG64 volatile *x)
-{
-    return __sync_add_and_fetch(x, 1);
-}
-static inline LONG InterlockedAdd(LONG volatile *x, LONG val)
-{
-    return __sync_add_and_fetch(x, val);
-}
-# else
-#  error "InterlockedIncrement() not implemented for this platform"
-# endif  /* HAVE_SYNC_ADD_AND_FETCH */
 
-# if HAVE_SYNC_SUB_AND_FETCH
 static inline LONG InterlockedDecrement(LONG volatile *x)
 {
-    return __sync_sub_and_fetch(x, 1);
+    return vkd3d_atomic_decrement_u32((uint32_t *)x);
 }
-# else
-#  error "InterlockedDecrement() not implemented for this platform"
-# endif
-
 #endif  /* _WIN32 */
 
 static inline void vkd3d_parse_version(const char *version, int *major, int *minor)
