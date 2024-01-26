@@ -3603,7 +3603,7 @@ NTSTATUS create_reparse_target( int dirfd, const char *unix_src, int depth, cons
     char *unix_path = NULL, *d;
     char target_path[PATH_MAX];
     OBJECT_ATTRIBUTES attr;
-    int nt_target_len;
+    int nt_path_len;
     char *unix_target;
     int is_relative;
     NTSTATUS status;
@@ -3658,9 +3658,9 @@ NTSTATUS create_reparse_target( int dirfd, const char *unix_src, int depth, cons
         nt_path[0] = 0;
     }
     /* append the target path (if absolute, appends to empty string) */
-    nt_target_len = nt_target.Length + sizeof(WCHAR);
-    nt_full_target.MaximumLength = nt_target_len + wcslen(nt_path) * sizeof(WCHAR);
-    nt_full_target.Buffer = malloc( nt_full_target.MaximumLength + 2 );
+    nt_path_len = wcslen(nt_path);
+    nt_full_target.MaximumLength = nt_target.Length + (nt_path_len + 1) * sizeof(WCHAR);
+    nt_full_target.Buffer = malloc( nt_full_target.MaximumLength );
     if (!nt_full_target.Buffer)
     {
         status = STATUS_NO_MEMORY;
@@ -3668,8 +3668,8 @@ NTSTATUS create_reparse_target( int dirfd, const char *unix_src, int depth, cons
     }
     wcscpy( nt_full_target.Buffer, nt_path );
     free( nt_path );
-    memcpy( &nt_full_target.Buffer[wcslen(nt_full_target.Buffer)], nt_target.Buffer, nt_target_len );
-    nt_full_target.Length = wcslen( nt_full_target.Buffer ) * sizeof(WCHAR);
+    memcpy( &nt_full_target.Buffer[nt_path_len], nt_target.Buffer, nt_target.Length );
+    nt_full_target.Length = nt_path_len * sizeof(WCHAR) + nt_target.Length;
     /* find the unix path for the target */
     InitializeObjectAttributes( &attr, &nt_full_target, 0, 0, NULL );
     for (;;)

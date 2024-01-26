@@ -1,0 +1,803 @@
+115a116
+> #define NONAMELESSUNION
+251a253,254
+> static BOOL disable_8dot3_filename;
+> 
+1474c1477
+<     const char *p;
+---
+>     const char *p, *end;
+1478c1481
+<     p = name + strlen( name );
+---
+>     end = p = name + strlen( name );
+1481,1484c1484,1495
+<     if (*p++ != '.') return FALSE;
+<     if (!*p || *p == '/') return FALSE;  /* "." directory */
+<     if (*p++ != '.') return TRUE;
+<     if (!*p || *p == '/') return FALSE;  /* ".." directory */
+---
+>     if (p >= end || *p != '.')
+>         return FALSE;
+>     /* . and .. must not be hidden */
+>     p++;
+>     if (p >= end || *p == '/')
+>         return FALSE;
+>     else if (*p == '.')
+>     {
+>         p++;
+>         if (p >= end || *p == '/')
+>             return FALSE;
+>     }
+1681c1692
+<     if (short_name)
+---
+>     if (!disable_8dot3_filename)
+1683,1684c1694,1704
+<         short_len = ntdll_umbstowcs( short_name, strlen(short_name),
+<                                      short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
+---
+>         if (short_name)
+>         {
+>             short_len = ntdll_umbstowcs( short_name, strlen(short_name),
+>                                         short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
+>         }
+>         else  /* generate a short name if necessary */
+>         {
+>             short_len = 0;
+>             if (!is_legal_8dot3_name( long_nameW, long_len ))
+>                 short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+>         }
+1686c1706
+<     else  /* generate a short name if necessary */
+---
+>     else
+1689,1690d1708
+<         if (!is_legal_8dot3_name( long_nameW, long_len ))
+<             short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+1826c1844
+<         int len = snprintf( data, sizeof(data), "0x%x", attr );
+---
+>         int len = sprintf( data, "0x%x", attr );
+1831a1850,1864
+> static unsigned int server_get_unix_name( HANDLE handle, char **unix_name );
+> 
+> /* return TRUE if this is a file owned by Wine which applications should not try to mess with. */
+> static BOOL is_wine_file( HANDLE handle )
+> {
+>     char *unix_name;
+>     BOOL ret;
+> 
+>     if (server_get_unix_name( handle, &unix_name ))
+>         return FALSE;
+>     ret = strstr(unix_name, "/lib/wine/" ) || strstr( unix_name, "/lib64/wine/" ) ||strstr( unix_name, "/share/wine/" );
+>     free(unix_name);
+>     return ret;
+> }
+> 
+1834c1867
+< static NTSTATUS fd_set_file_info( int fd, UINT attr, BOOL force_set_xattr )
+---
+> NTSTATUS fd_set_file_info( int fd, UINT attr, HANDLE handle, BOOL force_set_xattr )
+1848,1849c1881,1890
+<         /* add write permission only where we already have read permission */
+<         st.st_mode |= (0600 | ((st.st_mode & 044) >> 1)) & (~start_umask);
+---
+>         if (is_wine_file(handle))
+>         {
+>             TRACE("HACK: Not giving write permission to wine file!\n");
+>             return STATUS_ACCESS_DENIED;
+>         }
+>         else
+>         {
+>             /* add write permission only where we already have read permission */
+>             st.st_mode |= (0600 | ((st.st_mode & 044) >> 1)) & (~start_umask);
+>         }
+2269c2310
+<         io->Status = wine_server_call( req );
+---
+>         io->u.Status = wine_server_call( req );
+2273c2314
+<     if (io->Status == STATUS_NOT_IMPLEMENTED)
+---
+>     if (io->u.Status == STATUS_NOT_IMPLEMENTED)
+2275c2316
+<     return io->Status;
+---
+>     return io->u.Status;
+2318c2359
+<         if (asprintf( &buffer, "%s/dosdevices/a:", config_dir ) != -1)
+---
+>         if ((buffer = malloc( strlen(config_dir) + sizeof("/dosdevices/a:") )))
+2319a2361,2362
+>             strcpy( buffer, config_dir );
+>             strcat( buffer, "/dosdevices/a:" );
+2902c2945
+<             io->Status = status;
+---
+>             io->u.Status = status;
+3116c3159,3161
+<     if (asprintf( &dir, "%s%s", config_dir, system_dir ) == -1) return;
+---
+>     if (!(dir = malloc( strlen(config_dir) + sizeof(system_dir) ))) return;
+>     strcpy( dir, config_dir );
+>     strcat( dir, system_dir );
+3217c3262
+<     if (is_old_wow64()) init_redirects();
+---
+>     if (is_wow64) init_redirects();
+3244a3290,3292
+> 
+>     const char *sgi = getenv("SteamGameId");
+>     disable_8dot3_filename = sgi && !strcmp(sgi, "1105510");
+3306a3355,3377
+>     static const WCHAR globalrootW[] = {'\\','?','?','\\','G','l','o','b','a','l','R','o','o','t'};
+>     int prefix_len = 0;
+>     WCHAR *prefix;
+>     USHORT length;
+> 
+>     prefix = name->Buffer;
+>     length = name->Length;
+> 
+>     if (length >= ARRAY_SIZE( globalrootW ) &&
+>         !wcsnicmp( prefix, globalrootW, ARRAY_SIZE( globalrootW )))
+>     {
+>         WARN("Stripping off GlobalRoot prefix.\n");
+>         prefix += ARRAY_SIZE( globalrootW );
+>         prefix_len += ARRAY_SIZE( globalrootW );
+>         length -= ARRAY_SIZE( globalrootW );
+>     }
+> 
+>     if (length >= sizeof(nt_prefixW) &&
+>         !memcmp( prefix, nt_prefixW, sizeof(nt_prefixW) ))
+>         prefix_len += ARRAY_SIZE( nt_prefixW );
+>     else if (length >= sizeof(dosdev_prefixW) &&
+>         !wcsnicmp( prefix, dosdev_prefixW, ARRAY_SIZE( dosdev_prefixW )))
+>         prefix_len += ARRAY_SIZE( dosdev_prefixW );
+3308,3316c3379
+<     if (name->Length >= sizeof(nt_prefixW) &&
+<         !memcmp( name->Buffer, nt_prefixW, sizeof(nt_prefixW) ))
+<         return ARRAY_SIZE( nt_prefixW );
+< 
+<     if (name->Length >= sizeof(dosdev_prefixW) &&
+<         !wcsnicmp( name->Buffer, dosdev_prefixW, ARRAY_SIZE( dosdev_prefixW )))
+<         return ARRAY_SIZE( dosdev_prefixW );
+< 
+<     return 0;
+---
+>     return prefix_len;
+3628c3691
+<             nt_path = malloc( nt_path_len * sizeof(WCHAR) );
+---
+>             nt_path = calloc( nt_path_len, sizeof(WCHAR) );
+3633a3697
+>             FIXME("LE UNIX PATH = '%s'\n", unix_path);
+3634a3699
+>             FIXME("NT PATH: '%s', len = %d\n", debugstr_w(nt_path), nt_path_len);
+3660a3726,3727
+>     FIXME("nt_target = '%s', length = %d\n", debugstr_w(nt_target.Buffer), nt_target.Length);
+>     FIXME("nt_path = '%s'\n", debugstr_w(nt_path));
+3662,3663c3729,3733
+<     nt_full_target.MaximumLength = nt_target_len + wcslen(nt_path) * sizeof(WCHAR);
+<     nt_full_target.Buffer = malloc( nt_full_target.MaximumLength + 2 );
+---
+> 
+>     nt_full_target.Length = 0;
+>     nt_full_target.MaximumLength = nt_target.Length + (wcslen(nt_path) + 1) * sizeof(WCHAR);
+>     nt_full_target.Buffer = calloc( nt_full_target.MaximumLength, sizeof(char) );
+> 
+3669a3740
+>     nt_full_target.Length = wcslen(nt_path);
+3671,3672c3742,3751
+<     memcpy( &nt_full_target.Buffer[wcslen(nt_full_target.Buffer)], nt_target.Buffer, nt_target_len );
+<     nt_full_target.Length = wcslen( nt_full_target.Buffer ) * sizeof(WCHAR);
+---
+> 
+>     FIXME("nt_full_target = '%s', len = %d\n", debugstr_w(nt_full_target.Buffer), wcslen(nt_full_target.Buffer));
+>     FIXME("nt_target = '%s', len = %d, len2 = %d\n", debugstr_w(nt_target.Buffer), wcslen(nt_target.Buffer), nt_target_len);
+>     FIXME("nt_full_target us = '%s'\n", debugstr_us(&nt_full_target));
+>     FIXME("nt_target us = '%s'\n", debugstr_us(&nt_target));
+>     memcpy( &nt_full_target.Buffer[nt_full_target.Length], nt_target.Buffer, nt_target.Length );
+>     FIXME("nt_full_target2 = '%s', len = %d\n", debugstr_w(nt_full_target.Buffer), wcslen(nt_full_target.Buffer));
+>     FIXME("nt_full_target2 us = '%s'\n", debugstr_us(&nt_full_target));
+>     nt_full_target.Length += nt_target.Length;
+> 
+3677c3756
+<         unix_target = malloc( unix_target_len );
+---
+>         unix_target = calloc( unix_target_len, sizeof(char) );
+3710c3789,3791
+<             symlink( config_dir, prefix_link );
+---
+>             FIXME("SYMLINK1 '%s' and '%s'\n", config_dir, prefix_link);
+>             int retval = symlinkat( config_dir, dirfd, prefix_link );
+>             FIXME("SYMLINK1 RETVAL=%d,%d,%s\n", retval, errno, strerror(errno));
+3714c3795,3796
+<         if (append_prefix)
+---
+>         if (append_prefix) {
+>             FIXME("APPENDING PREFIX '%s' to '%s'\n", target_path, prefix_string);
+3716c3798,3799
+<         strcat( target_path, &unix_target[relative_offset] );
+---
+>         }
+>         strncat( target_path, &unix_target[relative_offset], unix_target_len - relative_offset );
+3718c3801,3803
+<         symlinkat( target_path, dirfd, link_path );
+---
+>         FIXME("SYMLINKAT1 '%s' and '%s', unix_target='%s'\n", target_path, link_path, &unix_target[relative_offset]);
+>         int retval = symlinkat( target_path, dirfd, link_path );
+>         FIXME("SYMLINKAt1 RETVAL=%d\n", retval);
+3826a3912
+>     FIXME("SYMLINK2 '%s' and '%s'\n", tmplink, "/tmplink");
+3865a3952
+>         FIXME("SYMLINKAT2 '%s' and '%s'\n", target_path, link_path);
+4048a4136
+>         FIXME("SYMLINKAT3 '%s' and '%s'\n", config_dir, prefix_string);
+4295a4384,4395
+> 
+>     static char *skip_search = NULL;
+>     if (skip_search == NULL)
+>     {
+>         const char *env_var;
+> 
+> 				skip_search = getenv("WINE_NO_OPEN_FILE_SEARCH");
+>         WARN("Disabling case insensitive search for opening files");
+>     }
+>     if (skip_search && strcasestr(unix_name, skip_search) && disposition == FILE_OPEN)
+>         return STATUS_OBJECT_NAME_NOT_FOUND;
+> 
+4402c4502
+<     if (!name_len || name[0] != '\\') return STATUS_OBJECT_PATH_SYNTAX_BAD;
+---
+>     if (!name || !name_len || name[0] != '\\') return STATUS_OBJECT_PATH_SYNTAX_BAD;
+4505c4605
+< NTSTATUS nt_to_unix_file_name_internal( const OBJECT_ATTRIBUTES *attr, char **name_ret, UINT disposition )
+---
+> NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, UINT disposition )
+4516a4617,4619
+>     if (!attr->ObjectName->Buffer && attr->ObjectName->Length)
+>         return STATUS_ACCESS_VIOLATION;
+> 
+4658c4761
+< NTSTATUS nt_to_unix_file_name( const OBJECT_ATTRIBUTES *attr, char **name_ret, UINT disposition )
+---
+> NTSTATUS nt_to_unix_file_name_external( const OBJECT_ATTRIBUTES *attr, char **name_ret, UINT disposition )
+4669c4772
+<     if (attr->RootDirectory) return nt_to_unix_file_name_internal( attr, name_ret, disposition );
+---
+>     if (attr->RootDirectory) return nt_to_unix_file_name( attr, name_ret, disposition );
+4688c4791
+<         return nt_to_unix_file_name_internal( attr, name_ret, disposition );
+---
+>         return nt_to_unix_file_name( attr, name_ret, disposition );
+4708c4811
+<     status = nt_to_unix_file_name_internal( &attr_copy, name_ret, disposition );
+---
+>     status = nt_to_unix_file_name( &attr_copy, name_ret, disposition );
+4978,4979c5081,5082
+<                 char *cmd;
+<                 if (asprintf( &cmd, "%s%s", umount, mount_point ) != -1)
+---
+>                 char *cmd = malloc( strlen(mount_point)+sizeof(umount));
+>                 if (cmd)
+4980a5084,5085
+>                     strcpy( cmd, umount );
+>                     strcat( cmd, mount_point );
+5074c5179
+<         return io->Status = status;
+---
+>         return io->u.Status = status;
+5135c5240
+<     return io->Status = status;
+---
+>     return io->u.Status = status;
+5204c5309
+<     if (timeout && timeout->QuadPart > 0) FIXME( "Wrong time %s\n", wine_dbgstr_longlong(timeout->QuadPart) );
+---
+>     if (timeout->QuadPart > 0) FIXME( "Wrong time %s\n", wine_dbgstr_longlong(timeout->QuadPart) );
+5217d5321
+<         req->disposition  = dispo;
+5221c5325
+<         req->timeout = timeout ? timeout->QuadPart : 0ULL;
+---
+>         req->timeout = timeout->QuadPart;
+5223,5227c5327
+<         if (!(status = wine_server_call( req )))
+<         {
+<             *handle = wine_server_ptr_handle( reply->handle );
+<             io->Information = reply->created ? FILE_CREATED : FILE_OPENED;
+<         }
+---
+>         if (!(status = wine_server_call( req ))) *handle = wine_server_ptr_handle( reply->handle );
+5232c5332
+<     return io->Status = status;
+---
+>     return status;
+5342c5442
+<     static const size_t info_sizes[FileMaximumInformation] =
+---
+>     static const size_t info_sizes[] =
+5408,5420d5507
+<         0,                                             /* FileDispositionInformationEx */
+<         0,                                             /* FileRenameInformationEx */
+<         0,                                             /* FileRenameInformationExBypassAccessCheck */
+<         0,                                             /* FileDesiredStorageClassInformation */
+<         0,                                             /* FileStatInformation */
+<         0,                                             /* FileMemoryPartitionInformation */
+<         0,                                             /* FileStatLxInformation */
+<         0,                                             /* FileCaseSensitiveInformation */
+<         0,                                             /* FileLinkInformationEx */
+<         0,                                             /* FileLinkInformationExBypassAccessCheck */
+<         0,                                             /* FileStorageReserveIdInformation */
+<         0,                                             /* FileCaseSensitiveInformationForceAccessCheck */
+<         0,                                             /* FileKnownFolderInformation */
+5434c5521
+<         return io->Status = STATUS_INVALID_INFO_CLASS;
+---
+>         return io->u.Status = STATUS_INVALID_INFO_CLASS;
+5438c5525
+<         return io->Status = STATUS_INFO_LENGTH_MISMATCH;
+---
+>         return io->u.Status = STATUS_INFO_LENGTH_MISMATCH;
+5442c5529
+<         if (status != STATUS_BAD_DEVICE_TYPE) return io->Status = status;
+---
+>         if (status != STATUS_BAD_DEVICE_TYPE) return io->u.Status = status;
+5647c5734
+<     return io->Status = status;
+---
+>     return io->u.Status = status;
+5672c5759
+<                 return io->Status = status;
+---
+>                 return io->u.Status = status;
+5674c5761,5762
+<             if (server_get_unix_name( handle, &unix_name )) unix_name = NULL;
+---
+>             if ((status = server_get_unix_name( handle, &unix_name )))
+>                 unix_name = NULL;
+5682,5684c5770,5774
+<             if (status == STATUS_SUCCESS)
+<                 status = fd_set_file_info( fd, info->FileAttributes,
+<                                            unix_name && is_hidden_file( unix_name ));
+---
+>             if (status == STATUS_SUCCESS && info->FileAttributes)
+>             {
+>                 BOOL force_xattr = unix_name && is_hidden_file( unix_name );
+>                 status = fd_set_file_info( fd, info->FileAttributes, handle, force_xattr );
+>             }
+5698c5788
+<                 return io->Status = status;
+---
+>                 return io->u.Status = status;
+5723a5814,5822
+>     case FileAllocationInformation:
+>     {
+>         const FILE_ALLOCATION_INFORMATION *info = ptr;
+> 
+>         FIXME("FileAllocationInformation AllocationSize %p stub.\n", (void *)(ULONG_PTR)info->AllocationSize.QuadPart);
+>         io->u.Status = STATUS_SUCCESS;
+>         break;
+>     }
+> 
+5821c5920
+<                 return io->Status = status;
+---
+>                 return io->u.Status = status;
+5852,5871c5951
+<                 req->flags    = info->DoDeleteFile ? FILE_DISPOSITION_DELETE : FILE_DISPOSITION_DO_NOT_DELETE;
+<                 status = wine_server_call( req );
+<             }
+<             SERVER_END_REQ;
+<         }
+<         else status = STATUS_INVALID_PARAMETER_3;
+<         break;
+< 
+<     case FileDispositionInformationEx:
+<         if (len >= sizeof(FILE_DISPOSITION_INFORMATION_EX))
+<         {
+<             FILE_DISPOSITION_INFORMATION_EX *info = ptr;
+< 
+<             if (info->Flags & FILE_DISPOSITION_FORCE_IMAGE_SECTION_CHECK)
+<                 FIXME( "FILE_DISPOSITION_FORCE_IMAGE_SECTION_CHECK not supported\n" );
+< 
+<             SERVER_START_REQ( set_fd_disp_info )
+<             {
+<                 req->handle   = wine_server_obj_handle( handle );
+<                 req->flags    = info->Flags;
+---
+>                 req->unlink   = info->DoDeleteFile;
+5880d5959
+<     case FileRenameInformationEx:
+5884d5962
+<             unsigned int flags;
+5891,5898d5968
+<             if (class == FileRenameInformation)
+<                 flags = info->ReplaceIfExists ? FILE_RENAME_REPLACE_IF_EXISTS : 0;
+<             else
+<                 flags = info->Flags;
+< 
+<             if (flags & ~(FILE_RENAME_REPLACE_IF_EXISTS | FILE_RENAME_IGNORE_READONLY_ATTRIBUTE))
+<                 FIXME( "unsupported flags: %#x\n", flags );
+< 
+5927c5997
+<                     req->flags    = flags;
+---
+>                     req->replace  = info->ReplaceIfExists;
+5947d6016
+<     case FileLinkInformationEx:
+5951d6019
+<             unsigned int flags;
+5956,5963d6023
+<             if (class == FileLinkInformation)
+<                 flags = info->ReplaceIfExists ? FILE_LINK_REPLACE_IF_EXISTS : 0;
+<             else
+<                 flags = info->Flags;
+< 
+<             if (flags & ~(FILE_LINK_REPLACE_IF_EXISTS | FILE_LINK_IGNORE_READONLY_ATTRIBUTE))
+<                 FIXME( "unsupported flags: %#x\n", flags );
+< 
+5979c6039
+<                     req->flags    = flags;
+---
+>                     req->replace  = info->ReplaceIfExists;
+5999c6059
+<     return io->Status = status;
+---
+>     return io->u.Status = status;
+6223c6283
+<             io->Status      = status;
+---
+>             io->u.Status    = status;
+6261c6321
+<             io->Status      = status;
+---
+>             io->u.Status    = status;
+6302c6362
+<             io->Status      = status;
+---
+>             io->u.Status    = status;
+6506a6567,6790
+> static pthread_mutex_t async_file_read_mutex = PTHREAD_MUTEX_INITIALIZER;
+> static pthread_cond_t async_file_read_cond = PTHREAD_COND_INITIALIZER;
+> 
+> struct async_file_read_job
+> {
+>     HANDLE handle;
+>     int unix_handle;
+>     int needs_close;
+>     HANDLE event;
+>     IO_STATUS_BLOCK *io;
+>     void *buffer;
+>     ULONG length;
+>     LARGE_INTEGER offset;
+>     DWORD thread_id;
+>     LONG  cancelled;
+>     struct list queue_entry;
+>     struct async_file_read_job *next;
+> };
+> 
+> 
+> static struct list async_file_read_queue = LIST_INIT( async_file_read_queue );
+> static struct async_file_read_job *async_file_read_running, *async_file_read_free;
+> 
+> static void async_file_complete_io( struct async_file_read_job *job, NTSTATUS status, ULONG total )
+> {
+>     job->io->u.Status = status;
+>     job->io->Information = total;
+> 
+>     if (job->event) NtSetEvent( job->event, NULL );
+> }
+> 
+> static void *async_file_read_thread(void *dummy)
+> {
+>     struct async_file_read_job *job, *ptr;
+>     ULONG buffer_length = 0;
+>     void *buffer = NULL;
+>     struct list *entry;
+>     NTSTATUS status;
+>     ULONG total;
+>     int result;
+> 
+>     pthread_mutex_lock( &async_file_read_mutex );
+>     while (1)
+>     {
+>         while (!(entry = list_head( &async_file_read_queue )))
+>         {
+>             pthread_cond_wait( &async_file_read_cond, &async_file_read_mutex );
+>             continue;
+>         }
+> 
+>         job = LIST_ENTRY( entry, struct async_file_read_job, queue_entry );
+>         list_remove( entry );
+> 
+>         total = 0;
+> 
+>         if ( job->cancelled )
+>         {
+>             pthread_mutex_unlock( &async_file_read_mutex );
+>             status = STATUS_CANCELLED;
+>             goto done;
+>         }
+> 
+>         job->next = async_file_read_running;
+>         async_file_read_running = job;
+>         pthread_mutex_unlock( &async_file_read_mutex );
+> 
+>         if (!buffer_length)
+>         {
+>             buffer = malloc(job->length);
+>             buffer_length = job->length;
+>         }
+>         else if (buffer_length < job->length)
+>         {
+>             buffer = realloc(buffer, job->length);
+>             buffer_length = job->length;
+>         }
+> 
+>         while ((result = pread( job->unix_handle, buffer, job->length, job->offset.QuadPart )) == -1)
+>         {
+>             if (errno != EINTR)
+>             {
+>                 status = errno_to_status( errno );
+>                 goto done;
+>             }
+>             if (job->cancelled)
+>                 break;
+>         }
+> 
+>         total = result;
+>         status = (total || !job->length) ? STATUS_SUCCESS : STATUS_END_OF_FILE;
+> done:
+>         if (job->needs_close) close( job->unix_handle );
+> 
+>         if (!InterlockedCompareExchange(&job->cancelled, 1, 0))
+>         {
+>             if (status == STATUS_SUCCESS)
+>                 memcpy( job->buffer, buffer, total );
+> 
+>             async_file_complete_io( job, status, total );
+>         }
+> 
+>         pthread_mutex_lock( &async_file_read_mutex );
+> 
+>         if (status != STATUS_CANCELLED)
+>         {
+>             ptr = async_file_read_running;
+>             if (job == ptr)
+>             {
+>                 async_file_read_running = job->next;
+>             }
+>             else
+>             {
+>                 while (ptr && ptr->next != job)
+>                     ptr = ptr->next;
+> 
+>                 assert( ptr );
+>                 ptr->next = job->next;
+>             }
+>         }
+> 
+>         job->next = async_file_read_free;
+>         async_file_read_free = job;
+>     }
+> 
+>     return NULL;
+> }
+> 
+> static pthread_once_t async_file_read_once = PTHREAD_ONCE_INIT;
+> 
+> static void async_file_read_init(void)
+> {
+>     pthread_t async_file_read_thread_id;
+>     pthread_attr_t pthread_attr;
+> 
+>     ERR("HACK: AC Odyssey async read workaround.\n");
+> 
+>     pthread_attr_init( &pthread_attr );
+>     pthread_attr_setscope( &pthread_attr, PTHREAD_SCOPE_SYSTEM );
+>     pthread_attr_setdetachstate( &pthread_attr, PTHREAD_CREATE_DETACHED );
+> 
+>     pthread_create( &async_file_read_thread_id, &pthread_attr, (void * (*)(void *))async_file_read_thread, NULL);
+>     pthread_attr_destroy( &pthread_attr );
+> }
+> 
+> static NTSTATUS queue_async_file_read( HANDLE handle, int unix_handle, int needs_close, HANDLE event,
+>                             IO_STATUS_BLOCK *io, void *buffer, ULONG length, LARGE_INTEGER *offset )
+> {
+>     struct async_file_read_job *job;
+> 
+>     pthread_once( &async_file_read_once, async_file_read_init );
+> 
+>     NtResetEvent( event, NULL );
+> 
+>     pthread_mutex_lock( &async_file_read_mutex );
+> 
+>     if (async_file_read_free)
+>     {
+>         job = async_file_read_free;
+>         async_file_read_free = async_file_read_free->next;
+>     }
+>     else
+>     {
+>         if (!(job = malloc( sizeof(*job) )))
+>         {
+>             pthread_mutex_unlock( &async_file_read_mutex );
+>             return STATUS_NO_MEMORY;
+>         }
+>     }
+> 
+>     job->handle = handle;
+>     job->unix_handle = unix_handle;
+>     job->needs_close = needs_close;
+>     job->event = event;
+>     job->io = io;
+>     job->buffer = buffer;
+>     job->length = length;
+>     job->offset = *offset;
+>     job->thread_id = GetCurrentThreadId();
+>     job->cancelled = 0;
+> 
+>     list_add_tail( &async_file_read_queue, &job->queue_entry );
+> 
+>     pthread_cond_signal( &async_file_read_cond );
+>     pthread_mutex_unlock( &async_file_read_mutex );
+> 
+>     return STATUS_PENDING;
+> }
+> 
+> static NTSTATUS cancel_async_file_read( HANDLE handle, IO_STATUS_BLOCK *io )
+> {
+>     DWORD thread_id = GetCurrentThreadId();
+>     struct async_file_read_job *job;
+>     unsigned int count = 0;
+> 
+>     TRACE( "handle %p, io %p.\n", handle, io );
+> 
+>     pthread_mutex_lock( &async_file_read_mutex );
+>     job = async_file_read_running;
+>     while (job)
+>     {
+>         if (((io && job->io == io)
+>                 || (!io && job->handle == handle && job->thread_id == thread_id))
+>                 && !InterlockedCompareExchange(&job->cancelled, 1, 0))
+>         {
+>             async_file_complete_io( job, STATUS_CANCELLED, 0 );
+>             ++count;
+>         }
+>         job = job->next;
+>     }
+> 
+>     LIST_FOR_EACH_ENTRY( job, &async_file_read_queue, struct async_file_read_job, queue_entry )
+>     {
+>         if (((io && job->io == io)
+>                 || (!io && job->handle == handle && job->thread_id == thread_id))
+>                 && !InterlockedCompareExchange(&job->cancelled, 1, 0))
+>         {
+>             async_file_complete_io( job, STATUS_CANCELLED, 0 );
+>             ++count;
+>         }
+>     }
+> 
+>     pthread_mutex_unlock( &async_file_read_mutex );
+>     return count ? STATUS_SUCCESS : STATUS_NOT_FOUND;
+> }
+6547a6832,6838
+>         if (ac_odyssey && async_read && length && event && !apc)
+>         {
+>             status = queue_async_file_read( handle, unix_handle, needs_close, event, io, buffer, length, offset );
+>             needs_close = 0;
+>             goto err;
+>         }
+> 
+6695c6986
+<         io->Status = status;
+---
+>         io->u.Status = status;
+6776c7067
+<     io->Status = status;
+---
+>     io->u.Status = status;
+7005c7296
+<         io->Status = status;
+---
+>         io->u.Status = status;
+7094c7385
+<         io->Status = status;
+---
+>         io->u.Status = status;
+7158c7449
+<     if (status != STATUS_PENDING && !NT_ERROR(status)) io->Status = status;
+---
+>     if (status != STATUS_PENDING && !NT_ERROR(status)) io->u.Status = status;
+7301c7592
+<     if (status != STATUS_PENDING) io->Status = status;
+---
+>     if (status != STATUS_PENDING) io->u.Status = status;
+7325c7616
+<         io->Status      = ret;
+---
+>         io->u.Status    = ret;
+7348c7639
+<                 io->Status      = ret;
+---
+>                 io->u.Status    = ret;
+7372a7664,7666
+>     if (ac_odyssey && !cancel_async_file_read( handle, NULL ))
+>         return (io_status->u.Status = STATUS_SUCCESS);
+> 
+7379c7673
+<             io_status->Status = status;
+---
+>             io_status->u.Status = status;
+7397a7692,7694
+>     if (ac_odyssey && !cancel_async_file_read( handle, io ))
+>         return (io_status->u.Status = STATUS_SUCCESS);
+> 
+7404c7701
+<             io_status->Status = status;
+---
+>             io_status->u.Status = status;
+7431c7728
+<     io_status->Status = status;
+---
+>     io_status->u.Status = status;
+7747c8044
+<         info->DeviceType = FILE_DEVICE_NAMED_PIPE;
+---
+>         info->DeviceType = FILE_DEVICE_UNKNOWN;
+7855a8153
+>     enum server_fd_type fd_type;
+7859c8157
+<     status = server_get_unix_fd( handle, 0, &fd, &needs_close, NULL, NULL );
+---
+>     status = server_get_unix_fd( handle, 0, &fd, &needs_close, &fd_type, NULL );
+7879c8177
+<                 io->Status = status;
+---
+>                 io->u.Status = status;
+7889c8187
+<     else if (status) return io->Status = status;
+---
+>     else if (status) return io->u.Status = status;
+7926c8224,8232
+<             if ((status = get_device_info( fd, info )) == STATUS_SUCCESS)
+---
+>             if (fd_type == FD_TYPE_SOCKET || fd_type == FD_TYPE_PIPE)
+>             {
+>                 info->Characteristics = 0;
+>                 info->DeviceType = FILE_DEVICE_NAMED_PIPE;
+>                 status = STATUS_SUCCESS;
+>             }
+>             else status = get_device_info( fd, info );
+> 
+>             if (!status)
+8083c8389
+<     return io->Status = status;
+---
+>     return io->u.Status = status;
+8323c8629
+<     case ObjectHandleFlagInformation:
+---
+>     case ObjectDataInformation:
+8325c8631
+<         OBJECT_HANDLE_FLAG_INFORMATION* p = ptr;
+---
+>         OBJECT_DATA_INFORMATION* p = ptr;
+8337c8643
+<                 p->Inherit = (reply->old_flags & HANDLE_FLAG_INHERIT) != 0;
+---
+>                 p->InheritHandle = (reply->old_flags & HANDLE_FLAG_INHERIT) != 0;
+8367c8673
+<     case ObjectHandleFlagInformation:
+---
+>     case ObjectDataInformation:
+8369c8675
+<         OBJECT_HANDLE_FLAG_INFORMATION* p = ptr;
+---
+>         OBJECT_DATA_INFORMATION* p = ptr;
+8377c8683
+<             if (p->Inherit) req->flags |= HANDLE_FLAG_INHERIT;
+---
+>             if (p->InheritHandle)    req->flags |= HANDLE_FLAG_INHERIT;
