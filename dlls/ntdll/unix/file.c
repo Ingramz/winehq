@@ -3707,7 +3707,7 @@ NTSTATUS create_reparse_target( int dirfd, const char *unix_src, int depth, cons
             strcpy( prefix_link, link_path );
             prefix_link[strlen(prefix_link)-1] = 0;
             strcat( prefix_link, prefix_string );
-            symlink( config_dir, prefix_link );
+            symlinkat( config_dir, dirfd, prefix_link );
         }
         for (;is_relative && depth > 0; depth--)
             strcat( target_path, "../" );
