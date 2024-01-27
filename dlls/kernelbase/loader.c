@@ -349,6 +349,7 @@ HMODULE WINAPI DECLSPEC_HOTPATCH GetModuleHandleW( LPCWSTR module )
  */
 BOOL WINAPI DECLSPEC_HOTPATCH GetModuleHandleExA( DWORD flags, LPCSTR name, HMODULE *module )
 {
+    BOOL ret = FALSE;
     WCHAR *nameW;
 
     if (!module)
@@ -360,13 +361,15 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetModuleHandleExA( DWORD flags, LPCSTR name, HMOD
     if (!name || (flags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS))
         return GetModuleHandleExW( flags, (LPCWSTR)name, module );
 
-    if (!(nameW = file_name_AtoW( name, FALSE )))
+    if (!(nameW = file_name_AtoW( name, TRUE )))
     {
         *module = NULL;
         SetLastError( ERROR_MOD_NOT_FOUND );
         return FALSE;
     }
-    return GetModuleHandleExW( flags, nameW, module );
+    ret = GetModuleHandleExW( flags, nameW, module );
+    HeapFree( GetProcessHeap(), 0, nameW );
+    return ret;
 }
 
 
@@ -516,10 +519,15 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryW( LPCWSTR name )
  */
 HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD flags )
 {
+    HMODULE ret = NULL;
     WCHAR *nameW;
 
-    if (!(nameW = file_name_AtoW( name, FALSE ))) return 0;
-    return LoadLibraryExW( nameW, file, flags );
+    if ((nameW = file_name_AtoW( name, TRUE )))
+    {
+        ret = LoadLibraryExW( nameW, file, flags );
+        HeapFree( GetProcessHeap(), 0, nameW );
+    }
+    return ret;
 }
 
 
